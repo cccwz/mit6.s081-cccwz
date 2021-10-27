@@ -5,7 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+extern char etext[];  // kernel.ld sets this to end of kernel code.
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -34,14 +34,17 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
+
+      /*char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      p->kstack = va;*/
+
+
   }
-  kvminithart();
+//  kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -112,6 +115,20 @@ found:
     release(&p->lock);
     return 0;
   }
+    /*char *pa = kalloc();
+        if(pa == 0)
+          panic("kalloc");
+        uint64 va = KSTACK((int) (p - proc));
+        kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+        p->kstack = va;*/
+    p->kpagetable=kvminit_proc();
+    char *pa=kalloc();
+    if(pa==0)
+        panic("kalloc");
+    uint64 va=TRAMPOLINE-2*PGSIZE;
+    mappages(p->kpagetable,va,PGSIZE,(uint64)pa,PTE_R | PTE_W);
+    p->kstack=va;
+
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -141,6 +158,11 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  //need to free p->kpagetable
+  if(p->kpagetable)
+      proc_freekpagetable(p->kpagetable,p->kstack);
+
+  p->kpagetable=0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -193,6 +215,23 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// free p->kpagetable
+void
+proc_freekpagetable(pagetable_t kpagetable,uint64 kstack){
+    // free map the hardware,but not free the pa
+    uvmunmap(kpagetable,UART0,1,0);
+    uvmunmap(kpagetable,VIRTIO0,1,0);
+    uvmunmap(kpagetable,PLIC,0x400000/PGSIZE,0);
+    uvmunmap(kpagetable,KERNBASE,((uint64)etext-KERNBASE)/PGSIZE,0);
+    uvmunmap(kpagetable,(uint64)etext,(PHYSTOP-(uint64)etext)/PGSIZE,0);
+    uvmunmap(kpagetable,TRAMPOLINE,1,0);
+
+    //free map the kstack,and free the pa
+//    ukvmfree(pagetable_t kpagetable,uint64 va,uint npage)
+    ukvmfree(kpagetable,kstack,1);
+
 }
 
 // a user program that calls exec("/init")
@@ -473,7 +512,11 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -45,6 +47,36 @@ kvminit()
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+}
+
+//proc's kernel page allocate
+pagetable_t kvminit_proc(){
+    kernel_pagetable = (pagetable_t) kalloc();
+    memset(kernel_pagetable, 0, PGSIZE);
+
+    // uart registers
+    kvmmap(UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+    // virtio mmio disk interface
+    kvmmap(VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+    // CLINT
+//    kvmmap(CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+    // PLIC
+    kvmmap(PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+    // map kernel text executable and read-only.
+    kvmmap(KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+    // map kernel data and the physical RAM we'll make use of.
+    kvmmap((uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+    // map the trampoline for trap entry/exit to
+    // the highest virtual address in the kernel.
+    kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+    return kernel_pagetable;
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -132,7 +164,7 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -297,6 +329,12 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
   freewalk(pagetable);
+}
+
+void ukvmfree(pagetable_t kpagetable,uint64 va,uint npage){
+    if(npage > 0)
+        uvmunmap(kpagetable, va, npage, 1);
+    freewalk(kpagetable);
 }
 
 // Given a parent process's page table, copy
