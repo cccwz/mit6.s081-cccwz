@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 struct cpu cpus[NCPU];
 
