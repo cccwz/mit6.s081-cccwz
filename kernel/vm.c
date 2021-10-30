@@ -6,6 +6,8 @@
 #include "defs.h"
 #include "fs.h"
 
+#include "spinlock.h"
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -181,9 +183,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+//      panic("uvmunmap: walk");
+          continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+//      panic("uvmunmap: not mapped");
+          continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -315,9 +319,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+//      panic("uvmcopy: pte should exist");
+          continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+//      panic("uvmcopy: page not present");
+          continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -356,6 +362,10 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
 
+  if(shouldalloc(dstva))
+      lazyalloc(dstva);
+
+
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
@@ -380,6 +390,9 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
+
+    if(shouldalloc(srcva))
+        lazyalloc(srcva);
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
@@ -439,4 +452,48 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+
+
+// should this va be aloocated?
+int shouldalloc(uint64 va){
+    struct proc *p = myproc();
+    pte_t *pte;
+    int res1= va<p->sz;
+    int res2=PGROUNDUP(va)!= PGROUNDDOWN(r_sp());
+    int res3=(((pte = walk(p->pagetable, va, 0))==0) || ((*pte & PTE_V)==0));
+
+    printf("va=%p p->sz=%p\n",va,p->sz);
+    printf("res1=%d  res2=%d  res3=%d\n",res1,res2,res3);
+
+    return res1&&res2&&res3;
+}
+
+int uvmshouldtouch(uint64 va) {
+    pte_t *pte;
+    struct proc *p = myproc();
+
+    return va < p->sz // within size of memory for the process
+           && PGROUNDDOWN(va) != r_sp() // not accessing stack guard page (it shouldn't be mapped)
+           && (((pte = walk(p->pagetable, va, 0))==0) || ((*pte & PTE_V)==0)); // page table entry does not exist
+}
+
+
+void
+lazyalloc(uint64 stval){
+    struct proc *p = myproc();
+    char *mem=kalloc();
+    if(mem==0){
+        printf("out of memory");
+        p->killed=1;
+    }else{
+        memset(mem, 0, PGSIZE);
+        if(mappages(p->pagetable, PGROUNDDOWN(stval), PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+//            printf("map fail");
+            kfree(mem);
+            p->killed=1;
+        }
+    }
+
 }
