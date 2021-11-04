@@ -23,6 +23,8 @@
 #include "fs.h"
 #include "buf.h"
 
+#define NBUC 13
+
 struct {
   struct spinlock lock;
   struct buf buf[NBUF];
@@ -30,8 +32,15 @@ struct {
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
+//  struct buf head;
 } bcache;
+
+struct bMem{
+    struct spinlock lock;
+    struct buf head;
+};
+
+struct bMem hashTable[NBUC];
 
 void
 binit(void)
@@ -40,8 +49,16 @@ binit(void)
 
   initlock(&bcache.lock, "bcache");
 
+    for(b = bcache.buf; b < bcache.buf+NBUF; b++){
+        initsleeplock(&b->lock, "buffer");
+    }
+
+    for(int i=0;i<NBUC;i++){
+        initlock(&hashTable[i].lock,"bcache.bucket");
+    }
+
   // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
+  /*bcache.head.prev = &bcache.head;
   bcache.head.next = &bcache.head;
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
     b->next = bcache.head.next;
@@ -49,7 +66,16 @@ binit(void)
     initsleeplock(&b->lock, "buffer");
     bcache.head.next->prev = b;
     bcache.head.next = b;
-  }
+  }*/
+
+}
+
+void replaceBuffer(struct buf *lruBuf,uint dev,uint blockno,uint tick){
+    lruBuf->dev=dev;
+    lruBuf->blockno=blockno;
+    lruBuf->tick=tick;
+    lruBuf->valid=0;
+    lruBuf->refcnt=1;
 }
 
 // Look through buffer cache for block on device dev.
@@ -60,7 +86,38 @@ bget(uint dev, uint blockno)
 {
   struct buf *b;
 
-  acquire(&bcache.lock);
+  //which bucket in hashtable
+  int num=blockno%NBUC;
+    acquire(&hashTable[num].lock);
+    for(b=hashTable[num].head.next;b;b=b->next){
+        if(b->blockno==blockno&&b->dev==dev){
+            release(&hashTable[num].lock);
+            acquiresleep(&b->lock);
+            b->refcnt++;
+            return b;
+        }
+    }
+
+    // not found in hashtable bucket
+    //find which buf in bcache will be replace
+    struct buf *lrubuf=0;
+    acquire(&bcache.lock);
+    for(b = bcache.buf; b < bcache.buf+NBUF; b++){
+        if(b->refcnt==0){
+            if(lrubuf==0){
+                lrubuf=b;
+            } else{
+                if(b->tick<lrubuf->tick)
+                    lrubuf=b;
+            }
+        }
+    }
+
+//    find lrubuf
+    if(lrubuf){
+
+    }
+  /*acquire(&bcache.lock);
 
   // Is the block already cached?
   for(b = bcache.head.next; b != &bcache.head; b = b->next){
@@ -85,7 +142,7 @@ bget(uint dev, uint blockno)
       return b;
     }
   }
-  panic("bget: no buffers");
+  panic("bget: no buffers");*/
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -93,7 +150,7 @@ struct buf*
 bread(uint dev, uint blockno)
 {
   struct buf *b;
-
+ticks
   b = bget(dev, blockno);
   if(!b->valid) {
     virtio_disk_rw(b, 0);
